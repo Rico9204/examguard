@@ -125,6 +125,9 @@ public class SelfTest {
         System.out.println("\n== 8. 카메라 시뮬레이션: 원 안이 '보호 없음 촬영본'과 얼마나 같은가 (상관계수, 1=그대로 읽힘 0=정보 없음) ==");
         cameraCheck(gen.generate(roster.get(0)).getVariants().get(2));
 
+        System.out.println("\n== 9. 시간차 마스킹 서브프레임 장수 (3·5장): 한 주기 평균 = 목표 밝기, 카메라 한 장 상관계수 ==");
+        subframeCheck(gen.generate(roster.get(0)).getVariants().get(2));
+
         if (args.length >= 2 && args[0].equals("--screens")) {
             File dir = new File(args[1]);
             dir.mkdirs();
@@ -261,6 +264,56 @@ public class SelfTest {
         if (photo > 0.5) throw new AssertionError("짧은 노출인데 시간차 마스킹이 뚫림 (" + photo + ")");
         if (video < 0.7) throw new AssertionError("2프레임 평균인데 글자가 복원되지 않음 (" + video + ")");
         if (misaligned[1] > video - 0.3) throw new AssertionError("쌍이 어긋났는데도 쌍이 맞을 때만큼 읽힘 (" + misaligned[1] + ")");
+    }
+
+    /**
+     * N=3·5: ① N장 평균이 목표 밝기와 같은지(반올림 오차 0.5 이내) ② 30fps 노출(화면 2프레임)이 한 주기를 다 덮지 못해
+     * 어느 타이밍에 찍어도 글자가 잘 안 읽히는지 (N=2의 "깨끗한 프레임"이 사라졌는지).
+     */
+    static void subframeCheck(QuestionVariant v) {
+        Point at = new Point(300, 120);
+        ExamPanel ref = panelFor(new PlainLayer() {
+            @Override public boolean prefersLargeText() { return true; }
+        }, v);
+        java.awt.image.BufferedImage plain = ref.snapshot(at, 0);
+        for (int n : new int[]{3, 5}) {
+            TemporalMaskLayer layer = new TemporalMaskLayer();
+            layer.setSubframes(n);
+            ExamPanel panel = panelFor(layer, v);
+            java.awt.image.BufferedImage[] frames = new java.awt.image.BufferedImage[n];
+            for (int f = 0; f < n; f++) frames[f] = panel.snapshot(at, f);
+            double maxErr = 0;
+            for (int y = at.y - 60; y < at.y + 60; y++) {
+                for (int x = at.x - 60; x < at.x + 60; x++) {
+                    int p = plain.getRGB(x, y);
+                    int lum = (((p >> 16) & 0xFF) * 3 + ((p >> 8) & 0xFF) * 6 + (p & 0xFF)) / 10;
+                    double sum = 0;
+                    for (java.awt.image.BufferedImage f : frames) sum += f.getRGB(x, y) & 0xFF;
+                    maxErr = Math.max(maxErr, Math.abs(sum / n - Math.round(128 + (lum - 128) * 0.16)));
+                }
+            }
+            StringBuilder row = new StringBuilder(String.format("%d장 (60Hz에서 %dHz) 평균 오차 최대 %.2f · 카메라 한 장(시작 0/1프레임):",
+                    n, 60 / n, maxErr));
+            double worstVideo = 0;
+            for (int ci = 0; ci < CameraModel.PRESETS.size(); ci++) {
+                CameraModel cam = CameraModel.PRESETS.get(ci);
+                double[] c = new double[2];
+                for (int phase = 0; phase < 2; phase++) {
+                    final long start = phase;
+                    java.awt.image.BufferedImage a = cam.capture(f -> ref.snapshot(at, f), start, new Random(1));
+                    java.awt.image.BufferedImage b = cam.capture(f -> panel.snapshot(at, f), start, new Random(1));
+                    c[phase] = correlation(a, b, at, 60, cam.scale());
+                }
+                if (ci == 1) worstVideo = Math.max(c[0], c[1]);
+                row.append(String.format(" | 카메라%d %.2f/%.2f", ci + 1, c[0], c[1]));
+            }
+            System.out.println(row);
+            panel.clear();
+            if (maxErr > 0.5 + 1e-9) throw new AssertionError(n + "장 평균이 목표 밝기와 다름 (최대 오차 " + maxErr + ")");
+            if (worstVideo > 0.6) throw new AssertionError(n + "장인데 30fps 한 장으로 읽힘 (" + worstVideo + ")");
+        }
+        ref.clear();
+        System.out.println("  (녹화 프레임 여러 장을 평균하면 3·5장도 복원됨: 5장 평균 약 0.87·0.95 — README 참고)");
     }
 
     private static ExamPanel panelFor(ProtectionLayer layer, QuestionVariant v) {

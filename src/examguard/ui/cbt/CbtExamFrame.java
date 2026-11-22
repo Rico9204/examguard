@@ -4,6 +4,7 @@ import examguard.analysis.TrajectoryRecorder;
 import examguard.display.AntiOcrWatermarkLayer;
 import examguard.display.CameraModel;
 import examguard.display.ExamPanel;
+import examguard.display.TemporalMaskLayer;
 import examguard.display.ProtectionLayer;
 import examguard.exam.ExamSession;
 import examguard.model.QuestionVariant;
@@ -341,6 +342,31 @@ public class CbtExamFrame extends JFrame {
                 gridTuning.setVisible(true);
             });
             left.add(tune);
+        }
+        if (layer instanceof TemporalMaskLayer) { // 실험: 한 주기 서브프레임 장수 (2/3/5)
+            TemporalMaskLayer mask = (TemporalMaskLayer) layer;
+            Integer[] choices = new Integer[TemporalMaskLayer.SUBFRAME_CHOICES.length];
+            for (int i = 0; i < choices.length; i++) choices[i] = TemporalMaskLayer.SUBFRAME_CHOICES[i];
+            JComboBox<Integer> count = new JComboBox<>(choices);
+            count.setSelectedItem(mask.getSubframes());
+            count.setFont(CbtStyle.font(Font.PLAIN, 13));
+            count.setFocusable(false); // 문제 화면의 방향키 입력을 가로채지 않게
+            count.addActionListener(e -> {
+                int n = (Integer) count.getSelectedItem();
+                if (n == mask.getSubframes()) return;
+                if (n > 2 && JOptionPane.showConfirmDialog(this, String.format(
+                        "%d장 모드는 깜빡임이 더 느려(60Hz 화면에서 약 %dHz) 노이즈가 끓듯이 보입니다.%n"
+                        + "광과민성 발작 위험이 가장 큰 주파수대(약 15~25Hz)에 가까워집니다.%n"
+                        + "빛 자극에 민감한 분은 사용하지 마세요. 계속할까요?", n, 60 / n),
+                        "주의: 느린 깜빡임", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE)
+                        != JOptionPane.YES_OPTION) {
+                    count.setSelectedItem(mask.getSubframes());
+                    return;
+                }
+                mask.setSubframes(n);
+            });
+            left.add(CbtStyle.label("서브프레임", Font.PLAIN, 13, CbtStyle.MUTED));
+            left.add(count);
         }
         bar.add(left, BorderLayout.WEST);
 
