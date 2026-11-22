@@ -21,12 +21,35 @@ import java.awt.geom.AffineTransform;
  *       논문 수준의 "강인성 워터마크"(주파수 영역 삽입, 오류 정정)는 구현하지 않았다.
  */
 public class AntiOcrWatermarkLayer extends SpotlightLayer {
-    private static final Color GRID = new Color(0, 0, 0, 26);
+    /** 격자 색. RGB는 세로줄을 빨강·초록·파랑 순서로 칠해 모니터 서브픽셀·카메라 색 필터와 간섭시키려는 것 */
+    public enum GridColor {
+        BLACK("검정 (가로·세로)"), RGB("RGB 세로 줄무늬");
+
+        private final String label;
+        GridColor(String label) { this.label = label; }
+        @Override public String toString() { return label; }
+    }
+
+    public static final int DEFAULT_PERIOD = 2;
+    public static final int DEFAULT_ALPHA = 26;   // 대비 약 10%
     private static final Color MARK = new Color(30, 60, 160);
     private static final float MARK_ALPHA = 0.09f;
-    private static final int GRID_PERIOD = 2; // 모니터 픽셀 단위 (나이퀴스트 근처라 모아레가 잘 생김)
 
     private volatile String watermark = "";
+    // 실험 조절값 (시험 창의 [격자 조절]에서 바꾼다). 실제 카메라로 모아레가 생기는 조건을 찾기 위한 손잡이.
+    private volatile int gridPeriod = DEFAULT_PERIOD; // 모니터 실제 픽셀 단위 주기
+    private volatile int gridAlpha = DEFAULT_ALPHA;   // 0~255, 선이 얼마나 진한가
+    private volatile GridColor gridColor = GridColor.BLACK;
+
+    public void setGrid(int period, int alpha, GridColor color) {
+        gridPeriod = Math.max(2, period);
+        gridAlpha = Math.max(0, Math.min(255, alpha));
+        gridColor = color;
+    }
+
+    public int getGridPeriod() { return gridPeriod; }
+    public int getGridAlpha() { return gridAlpha; }
+    public GridColor getGridColor() { return gridColor; }
 
     @Override
     public String getName() {
@@ -53,9 +76,21 @@ public class AntiOcrWatermarkLayer extends SpotlightLayer {
         int dw = (int) Math.ceil(w * old.getScaleX()), dh = (int) Math.ceil(h * old.getScaleY());
         g.setTransform(AffineTransform.getTranslateInstance(old.getTranslateX(), old.getTranslateY()));
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
-        g.setColor(GRID);
-        for (int x = 0; x < dw; x += GRID_PERIOD) g.fillRect(x, 0, 1, dh);
-        for (int y = 0; y < dh; y += GRID_PERIOD) g.fillRect(0, y, dw, 1);
+        int period = gridPeriod, alpha = gridAlpha;
+        int line = Math.max(1, period / 2); // 선:빈칸 = 1:1 (같은 주기에서 줄무늬 성분이 가장 강함)
+        if (alpha > 0) {
+            if (gridColor == GridColor.RGB) {
+                Color[] rgb = {new Color(255, 0, 0, alpha), new Color(0, 255, 0, alpha), new Color(0, 0, 255, alpha)};
+                for (int x = 0, k = 0; x < dw; x += period, k++) {
+                    g.setColor(rgb[k % 3]);
+                    g.fillRect(x, 0, line, dh);
+                }
+            } else {
+                g.setColor(new Color(0, 0, 0, alpha));
+                for (int x = 0; x < dw; x += period) g.fillRect(x, 0, line, dh);
+                for (int y = 0; y < dh; y += period) g.fillRect(0, y, dw, line);
+            }
+        }
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, aa);
         g.setTransform(old);
     }

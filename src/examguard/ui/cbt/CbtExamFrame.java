@@ -1,6 +1,7 @@
 package examguard.ui.cbt;
 
 import examguard.analysis.TrajectoryRecorder;
+import examguard.display.AntiOcrWatermarkLayer;
 import examguard.display.CameraModel;
 import examguard.display.ExamPanel;
 import examguard.display.ProtectionLayer;
@@ -78,6 +79,7 @@ public class CbtExamFrame extends JFrame {
     private JScrollPane omrScroll;
     private CalculatorDialog calculator;
     private CameraPreviewDialog cameraPreview;
+    private GridTuningDialog gridTuning;
     private int current;
     private boolean warned;
     private boolean finished;
@@ -330,6 +332,16 @@ public class CbtExamFrame extends JFrame {
         }
         left.add(Box.createHorizontalStrut(18));
         left.add(CbtStyle.label("보호 방식: " + layer.getName(), Font.PLAIN, 13, CbtStyle.MUTED));
+        if (layer instanceof AntiOcrWatermarkLayer) { // 실험: 격자 간격·대비·색 조절
+            JButton tune = new JButton("격자 조절…");
+            tune.setFont(CbtStyle.font(Font.PLAIN, 13));
+            tune.setFocusable(false); // 문제 화면의 방향키 입력을 가로채지 않게
+            tune.addActionListener(e -> {
+                if (gridTuning == null) gridTuning = new GridTuningDialog(this, (AntiOcrWatermarkLayer) layer, examPanel);
+                gridTuning.setVisible(true);
+            });
+            left.add(tune);
+        }
         bar.add(left, BorderLayout.WEST);
 
         JPanel middle = new JPanel(new FlowLayout(FlowLayout.CENTER, 0, 4));

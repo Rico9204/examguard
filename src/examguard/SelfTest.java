@@ -220,6 +220,7 @@ public class SelfTest {
         for (int ci = 1; ci <= CameraModel.PRESETS.size(); ci++) head.append(String.format(" | 카메라%d", ci));
         System.out.println(head);
         double[][] corr = new double[layers.length][CameraModel.PRESETS.size()];
+        double[] misaligned = new double[CameraModel.PRESETS.size()]; // 시간차 마스킹, 노출이 서브프레임 쌍에 어긋날 때
         for (int li = 0; li < layers.length; li++) {
             ProtectionLayer layer = layers[li];
             ExamPanel ref = panelFor(new PlainLayer() {
@@ -233,11 +234,24 @@ public class SelfTest {
                 java.awt.image.BufferedImage b = cam.capture(f -> panel.snapshot(at, f), 0, new Random(1));
                 corr[li][ci] = correlation(a, b, at, 60, cam.scale());
                 row.append(String.format(" | %6.2f", corr[li][ci]));
+                if (layer instanceof TemporalMaskLayer) {
+                    // 홀수 프레임에서 노출 시작 = 한 쌍의 뒷장 + 다음 쌍의 앞장 (서로 다른 노이즈라 지워지지 않음)
+                    java.awt.image.BufferedImage a1 = cam.capture(f -> ref.snapshot(at, f), 1, new Random(1));
+                    java.awt.image.BufferedImage b1 = cam.capture(f -> panel.snapshot(at, f), 1, new Random(1));
+                    misaligned[ci] = correlation(a1, b1, at, 60, cam.scale());
+                }
             }
             System.out.println(row);
+            if (layer instanceof TemporalMaskLayer) {
+                StringBuilder mis = new StringBuilder(String.format("%-14s", "  └ 쌍 어긋남"));
+                for (double m : misaligned) mis.append(String.format(" | %6.2f", m));
+                System.out.println(mis);
+            }
             panel.clear();
             ref.clear();
         }
+        System.out.println("  (위 표는 노출이 서브프레임 쌍에 딱 맞을 때(0번 프레임 시작). 실제 영상은 노출 시작이 무작위라 "
+                + "2프레임 노출의 약 절반이 '쌍 어긋남'이 된다)");
         for (int ci = 0; ci < CameraModel.PRESETS.size(); ci++) {
             CameraModel cam = CameraModel.PRESETS.get(ci);
             System.out.printf("  카메라%d %s: %s%n", ci + 1, cam.getName(), cam.describe(760));
@@ -246,6 +260,7 @@ public class SelfTest {
         double photo = corr[2][2], video = corr[2][1];
         if (photo > 0.5) throw new AssertionError("짧은 노출인데 시간차 마스킹이 뚫림 (" + photo + ")");
         if (video < 0.7) throw new AssertionError("2프레임 평균인데 글자가 복원되지 않음 (" + video + ")");
+        if (misaligned[1] > video - 0.3) throw new AssertionError("쌍이 어긋났는데도 쌍이 맞을 때만큼 읽힘 (" + misaligned[1] + ")");
     }
 
     private static ExamPanel panelFor(ProtectionLayer layer, QuestionVariant v) {
