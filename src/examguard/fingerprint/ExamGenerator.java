@@ -122,6 +122,11 @@ public class ExamGenerator {
         return count;
     }
 
+    /** 시험 단위 시드 (학생과 무관). 같은 비밀키면 같은 값 → 색 열쇠처럼 시험마다 바뀌어야 하는 설정에 쓴다 */
+    public long examSeed(String purpose) {
+        return hash(purpose, "exam");
+    }
+
     private long seedFor(Student student) {
         return hash("variant", student.getStudentNo());
     }

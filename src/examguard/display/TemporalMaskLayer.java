@@ -14,38 +14,40 @@ import java.util.Random;
  *   N=2: 짝수 프레임 R(무작위), 홀수 프레임 2T-R
  *   N=3·5: T + d·(u_k - 평균 u). d는 모든 값이 0~255 안에 들어가는 최댓값
  *
- * 장수(N)를 늘리면 (카메라 시뮬레이션 결과, AI 안경 영상 기준):
- *  - 30fps 노출 한 번(화면 2프레임)이 한 주기를 다 덮지 못해 "깨끗하게 찍히는 프레임"이 사라진다
- *    (N=2: 0.95/0.25 → N=3·5: 어느 타이밍이든 0.3~0.4)
- *  - 하지만 녹화 프레임 여러 장을 평균하면 여전히 복원된다 (5장 평균 N=3 0.87, N=5 0.95)
- *  - 60Hz에서 한 주기가 길어져(N=3 20Hz, N=5 12Hz) 깜빡임이 보이고 광과민성 위험이 커진다
+ * 기본 N=3 (진짜 60Hz에서 20Hz). 근거 (2026-11-23, AI 안경 영상 33ms 노출, 노출 시작 120가지):
+ *  - N=2는 30fps 영상 프레임의 50%가 깨끗하게 찍힌다(상관 0.93). N=3은 0%(최대 0.47, 감마 수정 후).
+ *  - 예전 Swing Timer는 실제로 약 33Hz라 N=2가 약 17Hz로 느려져 있었고(깨끗 28%), "3·5장은 못 쓸 만큼 피곤"은
+ *    11Hz·7Hz 화면에서의 관찰이었다. 진짜 20Hz의 피로는 아직 사람으로 측정하지 않았다.
+ *  - 녹화 프레임 여러 장을 평균하면 여전히 복원된다 (5장 평균 N=3 0.83, N=5 0.84) — 화면으로는 못 막음
+ *  - 20Hz는 광과민성 민감 대역(약 15~25Hz) 안이다. 원 밖은 정보 없는 회색 막대로 두고(ZeroInfoSpotlightLayer),
+ *    시험 창에 탈출 키(F2)와 눈 휴식이 있다. 한 줄 높이 네모 창(깜빡이는 면적 56% 감소)도 시험했지만
+ *    위아래 줄 맥락이 안 보여 원형으로 되돌렸다 (2026-11-23). 면적을 줄이려면 반지름을 줄인다.
  *
  * R이 0~255 안에 들어가려면 T를 회색 쪽으로 압축해야 한다(CONTRAST).
  * 대비를 낮출수록 한 장의 노이즈가 글자를 더 잘 가리지만, 사람도 읽기 어려워진다.
  *
  * 한계 (MotionNoiseLayer와 같은 계열):
  *  - 동영상 여러 프레임을 평균하면 글자가 그대로 복원된다 (사람 눈이 하는 일과 같으므로 막을 수 없음).
- *  - Swing Timer는 모니터 주사율에 맞춰 그리지 못한다. 프레임이 밀리면 깜빡임이 보이고
- *    한 서브프레임이 오래 남아 효과가 약해진다. 제대로 하려면 BufferStrategy 전체화면 + 120Hz 이상.
- *  - 깜빡임 때문에 광과민성 위험이 있다.
+ *  - ExamPanel 렌더 스레드는 60Hz에 맞추지만 vsync는 보장하지 않는다 (가끔 짧은 위상 미끄러짐).
+ *  - 120/144Hz 모니터는 깜빡임을 줄이지만 33ms 노출 영상에 대한 방어도 함께 사라진다 (40Hz 이상은 카메라도 섞음).
  */
-public class TemporalMaskLayer extends SpotlightLayer {
+public class TemporalMaskLayer extends ZeroInfoSpotlightLayer {
     public static final int[] SUBFRAME_CHOICES = {2, 3, 5};
     private static final int GRAIN = 2;
     // ponytail: 고정 대비 0.16 (글자≈108, 배경≈148). 실제 사람 가독성 실험으로 다시 맞출 값.
     private static final double CONTRAST = 0.16;
-
-    private volatile int subframes = 2;
+    private volatile int subframes = 3;
     private int width;
     private int height;
     private int gridW;
     private int gridSize;
-    private int[] target;      // 압축된 목표 밝기 T
+    private double[] target;   // 압축된 목표 밝기 T의 빛의 세기 (0~1)
     private float[][] noise;   // [서브프레임][알갱이] 0~1 난수, 주기마다 새로 뽑음
     private long noiseCycle = -1;
     private final Random rnd = new Random();
     private BufferedImage frameImage;
     private int[] framePixels;
+    private double[] pixelNoise = new double[0]; // 한 픽셀의 서브프레임별 난수 (매 픽셀 새로 만들지 않으려고 재사용)
 
     @Override
     public String getName() {
@@ -73,14 +75,15 @@ public class TemporalMaskLayer extends SpotlightLayer {
 
     @Override
     public void prepare(BufferedImage sharp) {
+        super.prepare(sharp); // 글줄 감지·회색 막대 배경
         width = sharp.getWidth();
         height = sharp.getHeight();
         int[] rgb = sharp.getRGB(0, 0, width, height, null, 0, width);
-        target = new int[rgb.length];
+        target = new double[rgb.length];
         for (int i = 0; i < rgb.length; i++) {
             int r = (rgb[i] >> 16) & 0xFF, g = (rgb[i] >> 8) & 0xFF, b = rgb[i] & 0xFF;
             int lum = (r * 3 + g * 6 + b) / 10;
-            target[i] = (int) Math.round(128 + (lum - 128) * CONTRAST);
+            target[i] = Gamma.toLinear((int) Math.round(128 + (lum - 128) * CONTRAST)); // 빛의 세기로 저장
         }
         gridW = width / GRAIN + 1;
         gridSize = gridW * (height / GRAIN + 1);
@@ -106,39 +109,52 @@ public class TemporalMaskLayer extends SpotlightLayer {
             noiseCycle = cycle;
         }
         int k = (int) (ctx.getFrame() % n);
+        if (pixelNoise.length != n) pixelNoise = new double[n];
+        double[] uu = pixelNoise;
         Rectangle r = area.intersection(new Rectangle(0, 0, width, height));
         for (int y = r.y; y < r.y + r.height; y++) {
             int row = (y / GRAIN) * gridW;
             for (int x = r.x; x < r.x + r.width; x++) {
                 int i = y * width + x, gi = row + x / GRAIN;
-                int v = n == 2 ? subframe(target[i], noise[0][gi], k == 1) : subframeN(target[i], noise, gi, k);
+                for (int j = 0; j < n; j++) uu[j] = noise[j][gi];
+                int v = n == 2 ? subframe(target[i], uu[0], k == 1) : subframeN(target[i], uu, k);
                 framePixels[i] = (v << 16) | (v << 8) | v;
             }
         }
         g.drawImage(frameImage, 0, 0, null);
     }
 
-    /** N=2: 목표 밝기 t를 서브프레임 값으로. 짝수·홀수 프레임 값의 합은 항상 2t (평균 = t). */
-    static int subframe(int t, float u, boolean odd) {
-        int lo = Math.max(0, 2 * t - 255), hi = Math.min(255, 2 * t);
-        int a = lo + Math.round(u * (hi - lo));
-        return odd ? 2 * t - a : a;
+    /*
+     * 쌍(주기)은 "빛의 세기" 기준으로 평균이 목표가 되게 만든다 (2026-11-23 수정).
+     * 사람 눈은 빛을 평균하는데 예전에는 픽셀 값(감마 적용)으로 평균을 맞춰, 사람 눈에도 노이즈가 남았다
+     * (감마 2.2 기준: 2장 표준편차 12.8·최대 55, 전체가 +15 밝게 뜸 — 글자·배경 차 약 36과 비교하면 큼).
+     * t = 목표 빛의 세기(0~1), 반환값 = 화면 픽셀 값. 마지막 서브프레임이 앞 장들의 반올림 오차까지 메운다.
+     */
+
+    /** N=2: 짝수 프레임 a, 홀수 프레임 2t−a (빛 기준). */
+    static int subframe(double t, double u, boolean odd) {
+        double lo = Math.max(0, 2 * t - 1), hi = Math.min(1, 2 * t);
+        int a = Gamma.toValue(lo + u * (hi - lo));
+        return odd ? Gamma.toValue(2 * t - Gamma.toLinear(a)) : a;
     }
 
     /**
-     * N≥3: k번째 서브프레임 값 = t + d·(u_k - 평균 u). 평균에서 벗어난 정도를 그대로 쓰므로 N장 평균은 t
-     * (반올림 때문에 최대 0.5 차이). d는 가장 밝은·어두운 서브프레임이 0~255에 딱 닿는 최댓값.
+     * N≥3: k번째 서브프레임 빛 = t + d·(u_k - 평균 u). d는 가장 밝은·어두운 장이 0~1에 딱 닿는 최댓값.
      * (N=2에 이 식을 쓰면 늘 경계값만 나와 무작위성이 사라지므로 N=2는 subframe()을 쓴다)
      */
-    static int subframeN(int t, float[][] u, int gi, int k) {
+    static int subframeN(double t, double[] u, int k) {
+        int n = u.length;
         double mean = 0, max = -1, min = 2;
-        for (float[] row : u) {
-            mean += row[gi];
-            max = Math.max(max, row[gi]);
-            min = Math.min(min, row[gi]);
+        for (double v : u) {
+            mean += v;
+            max = Math.max(max, v);
+            min = Math.min(min, v);
         }
-        mean /= u.length;
-        double d = Math.min((255 - t) / Math.max(1e-6, max - mean), t / Math.max(1e-6, mean - min));
-        return (int) Math.max(0, Math.min(255, Math.round(t + d * (u[k][gi] - mean))));
+        mean /= n;
+        double d = Math.min((1 - t) / Math.max(1e-6, max - mean), t / Math.max(1e-6, mean - min));
+        if (k < n - 1) return Gamma.toValue(t + d * (u[k] - mean));
+        double shown = 0; // 앞 장들이 실제로 낸 빛 (반올림 후)
+        for (int j = 0; j < n - 1; j++) shown += Gamma.toLinear(Gamma.toValue(t + d * (u[j] - mean)));
+        return Gamma.toValue(n * t - shown);
     }
 }

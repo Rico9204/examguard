@@ -3,7 +3,12 @@ package examguard.ui.cbt;
 import examguard.analysis.TrajectoryRecorder;
 import examguard.display.AntiOcrWatermarkLayer;
 import examguard.display.CameraModel;
+import examguard.display.Cellophane;
+import examguard.display.ColorKeyLayer;
 import examguard.display.ExamPanel;
+import examguard.display.LineRulerLayer;
+import examguard.display.SpotlightLayer;
+import examguard.display.ZeroInfoSpotlightLayer;
 import examguard.display.TemporalMaskLayer;
 import examguard.display.ProtectionLayer;
 import examguard.exam.ExamSession;
@@ -14,10 +19,12 @@ import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.ButtonGroup;
+import javax.swing.AbstractAction;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
+import javax.swing.KeyStroke;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
@@ -55,6 +62,13 @@ import java.util.function.IntConsumer;
 public class CbtExamFrame extends JFrame {
     public static final String EXAM_TITLE = "2026학년도 2학기 객체지향언어 프로그래밍 기말시험";
     private static final int WARNING_SECONDS = 5 * 60;
+    /**
+     * 깜빡이는 보호 방식(시간차 마스킹·움직임 노이즈)의 눈 휴식: 깜빡이는 화면을 본 시간이 REST_EVERY_MS가 될 때마다
+     * REST_SECONDS 동안 문제를 가리고, 그만큼 시험 시간을 늘린다. 화면에 읽을 것이 없으므로 방어 구멍은 없다.
+     * ponytail: 10분/25초는 가정값. 피로 실험 결과로 다시 정할 값.
+     */
+    private static final long REST_EVERY_MS = 10 * 60_000L;
+    private static final int REST_SECONDS = 25;
 
     private final ExamSession session;
     private final ProtectionLayer layer;
@@ -84,6 +98,11 @@ public class CbtExamFrame extends JFrame {
     private int current;
     private boolean warned;
     private boolean finished;
+    private final JLabel restLabel = CbtStyle.label(" ", Font.BOLD, 20, CbtStyle.NAVY);
+    private long lastTickMs;
+    private long flickerMs;      // 깜빡이는 화면을 본 누적 시간
+    private long restUntilMs;    // 0이 아니면 눈 휴식 중
+    private boolean flickerOff;  // 깜빡임 끄기(F2) 사용
 
     public CbtExamFrame(ExamSession session, ProtectionLayer layer, int radius, TrajectoryRecorder recorder,
                         IntConsumer onQuestionChanged, Consumer<ExamSession> onSubmit, Runnable onAbort,
@@ -107,6 +126,7 @@ public class CbtExamFrame extends JFrame {
         root.add(buildNoticePage(), "notice");
         root.add(buildExamPage(), "exam");
         root.add(buildDonePage(), "done");
+        root.add(buildRestPage(), "rest");
         setContentPane(root);
         cards.show(root, "info");
 
@@ -265,6 +285,7 @@ public class CbtExamFrame extends JFrame {
 
         JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 12, 0));
         right.setOpaque(false);
+        right.add(glassesSelector());
         right.add(cameraSelector());
         right.add(Box.createHorizontalStrut(12));
         JPanel timeBox = new JPanel();
@@ -279,6 +300,29 @@ public class CbtExamFrame extends JFrame {
         right.add(timeBox);
         header.add(right, BorderLayout.EAST);
         return header;
+    }
+
+    /** 실험 도구: 셀로판 안경을 썼다고 가정한 화면으로 문제를 보여 준다 (카메라 시뮬레이션은 원래 화면을 찍음) */
+    private JComponent glassesSelector() {
+        JPanel box = new JPanel();
+        box.setOpaque(false);
+        box.setLayout(new BoxLayout(box, BoxLayout.Y_AXIS));
+        JLabel title = CbtStyle.label("셀로판 안경 시뮬레이션 (실험)", Font.PLAIN, 13, new Color(210, 222, 240));
+        title.setAlignmentX(Component.RIGHT_ALIGNMENT);
+        List<Object> items = new ArrayList<>();
+        items.add("안경 없음");
+        for (Cellophane c : Cellophane.values()) items.add(c);
+        JComboBox<Object> combo = new JComboBox<>(items.toArray());
+        combo.setFont(CbtStyle.font(Font.PLAIN, 13));
+        combo.setFocusable(false); // 문제 화면의 방향키 입력을 가로채지 않게
+        combo.setAlignmentX(Component.RIGHT_ALIGNMENT);
+        combo.addActionListener(e -> {
+            Object sel = combo.getSelectedItem();
+            examPanel.setViewFilter(sel instanceof Cellophane ? (Cellophane) sel : null);
+        });
+        box.add(title);
+        box.add(combo);
+        return box;
     }
 
     /** 실험 도구: 촬영 기기를 고르면 그 기기에 찍히는 모습을 별도 창으로 보여 준다 */
@@ -343,6 +387,25 @@ public class CbtExamFrame extends JFrame {
             });
             left.add(tune);
         }
+        if (layer.getClass() == SpotlightLayer.class || layer instanceof ZeroInfoSpotlightLayer) {
+            // 부분 표시 3가지를 시험 중에 바꿔 가며 비교 (흐린 원 / 정보 없는 원 / 줄 단위)
+            ProtectionLayer[] modes = {
+                    layer.getClass() == SpotlightLayer.class ? layer : new SpotlightLayer(),
+                    layer.getClass() == ZeroInfoSpotlightLayer.class ? layer : new ZeroInfoSpotlightLayer(),
+                    layer instanceof LineRulerLayer ? layer : new LineRulerLayer()};
+            String[] modeNames = {"흐린 원", "정보 없는 원", "줄 단위"};
+            JComboBox<String> compare = new JComboBox<>(modeNames);
+            for (int i = 0; i < modes.length; i++) if (modes[i] == layer) compare.setSelectedIndex(i);
+            compare.setFont(CbtStyle.font(Font.PLAIN, 13));
+            compare.setFocusable(false); // 문제 화면의 방향키 입력을 가로채지 않게
+            compare.addActionListener(e -> examPanel.setLayer(modes[compare.getSelectedIndex()]));
+            left.add(CbtStyle.label("표시 비교", Font.PLAIN, 13, CbtStyle.MUTED));
+            left.add(compare);
+        }
+        if (layer instanceof ColorKeyLayer) { // 실험: 이 시험의 지정 셀로판 색 (실제로는 감독관이 안경을 배포)
+            left.add(CbtStyle.label("· 지정 안경: " + ((ColorKeyLayer) layer).getKey()
+                    + " (우측 상단에서 안경 시뮬레이션)", Font.BOLD, 13, CbtStyle.INK));
+        }
         if (layer instanceof TemporalMaskLayer) { // 실험: 한 주기 서브프레임 장수 (2/3/5)
             TemporalMaskLayer mask = (TemporalMaskLayer) layer;
             Integer[] choices = new Integer[TemporalMaskLayer.SUBFRAME_CHOICES.length];
@@ -355,8 +418,8 @@ public class CbtExamFrame extends JFrame {
                 int n = (Integer) count.getSelectedItem();
                 if (n == mask.getSubframes()) return;
                 if (n > 2 && JOptionPane.showConfirmDialog(this, String.format(
-                        "%d장 모드는 깜빡임이 더 느려(60Hz 화면에서 약 %dHz) 노이즈가 끓듯이 보입니다.%n"
-                        + "광과민성 발작 위험이 가장 큰 주파수대(약 15~25Hz)에 가까워집니다.%n"
+                        "%d장 모드는 60Hz 화면에서 약 %dHz로 깜빡입니다. 장수가 많을수록 느려져 노이즈가 더 끓듯이 보입니다.%n"
+                        + "광과민성 발작 위험이 큰 주파수대(약 15~25Hz)에 가깝거나 그 안입니다.%n"
                         + "빛 자극에 민감한 분은 사용하지 마세요. 계속할까요?", n, 60 / n),
                         "주의: 느린 깜빡임", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE)
                         != JOptionPane.YES_OPTION) {
@@ -367,6 +430,16 @@ public class CbtExamFrame extends JFrame {
             });
             left.add(CbtStyle.label("서브프레임", Font.PLAIN, 13, CbtStyle.MUTED));
             left.add(count);
+        }
+        if (layer.isAnimated()) { // 깜빡이는 화면의 탈출구 (광과민성·피로)
+            JButton off = CbtStyle.button("깜빡임 끄기 (F2)", Color.WHITE, CbtStyle.INK);
+            off.setFocusable(false); // 문제 화면의 방향키 입력을 가로채지 않게
+            off.addActionListener(e -> turnOffFlicker());
+            left.add(off);
+            getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke("F2"), "flickerOff");
+            getRootPane().getActionMap().put("flickerOff", new AbstractAction() {
+                @Override public void actionPerformed(java.awt.event.ActionEvent e) { turnOffFlicker(); }
+            });
         }
         bar.add(left, BorderLayout.WEST);
 
@@ -464,6 +537,32 @@ public class CbtExamFrame extends JFrame {
         return page("답안 제출 완료", card);
     }
 
+    // ───────────────────────── 눈 휴식
+
+    private JComponent buildRestPage() {
+        JPanel card = card(520);
+        card.add(CbtStyle.label("눈 휴식 시간입니다", Font.BOLD, 24, CbtStyle.NAVY), gbc(0));
+        card.add(restLabel, gbc(1));
+        card.add(CbtStyle.label("화면에서 눈을 떼고 먼 곳을 보세요. 쉬는 시간만큼 시험 시간이 늘어납니다.",
+                Font.PLAIN, 15, CbtStyle.MUTED), gbc(2));
+        return page("눈 휴식", card);
+    }
+
+    /**
+     * 깜빡임 끄기(F2): 정보 없는 원(정지 화면)으로 바꾼다. 원 밖에는 여전히 글자 정보가 없어 사진 한 장엔 원 하나 분량만 담긴다.
+     * 끈 뒤에는 영상 촬영에 대한 방어가 약해지므로 시각을 감독관 확인 권장 목록에 남긴다 (수험자에게도 알린다).
+     */
+    private void turnOffFlicker() {
+        if (flickerOff || !examPanel.getLayer().isAnimated()) return;
+        flickerOff = true;
+        ZeroInfoSpotlightLayer calm = new ZeroInfoSpotlightLayer();
+        calm.setWatermark("ID " + session.getPaper().getCodeString());
+        examPanel.setLayer(calm);
+        String at = java.time.LocalTime.now().withNano(0).toString();
+        session.addSupervisorNote(at + " 깜빡임 끄기(F2) 사용 — 이후 정지 화면. 이 시각 이후 촬영 여부 확인");
+        warningLabel.setText("깜빡임을 껐습니다 (감독관 기록에 남습니다).");
+    }
+
     // ───────────────────────── 동작
 
     private void startExam() {
@@ -505,6 +604,27 @@ public class CbtExamFrame extends JFrame {
     }
 
     private void tick() {
+        long now = System.currentTimeMillis();
+        long dt = lastTickMs == 0 ? 0 : now - lastTickMs;
+        lastTickMs = now;
+        if (restUntilMs > 0) {
+            if (now >= restUntilMs) {
+                restUntilMs = 0;
+                cards.show(root, "exam");
+                examPanel.requestFocusInWindow();
+            } else {
+                restLabel.setText((restUntilMs - now + 999) / 1000 + "초 후 다시 시작합니다");
+            }
+        } else if (session.isStarted() && !finished && examPanel.getLayer().isAnimated()) {
+            flickerMs += dt;
+            if (flickerMs >= REST_EVERY_MS) {
+                flickerMs = 0;
+                restUntilMs = now + REST_SECONDS * 1000L;
+                session.extend(REST_SECONDS);
+                restLabel.setText(REST_SECONDS + "초 후 다시 시작합니다");
+                cards.show(root, "rest");
+            }
+        }
         int left = session.getRemainingSeconds();
         timeLabel.setText(String.format("%02d:%02d", left / 60, left % 60));
         if (!warned && left <= WARNING_SECONDS) {

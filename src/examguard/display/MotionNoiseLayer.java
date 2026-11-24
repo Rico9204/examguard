@@ -19,8 +19,8 @@ import java.util.Random;
  * 한 장으로도 읽힐 수 있어서, 프레임 하나만 봐서는 정보가 전혀 없는 이 방식으로 바꿨다.
  * 한계: 동영상을 찍어 프레임끼리 비교하면 글자를 복원할 수 있다.
  *
- * 구현 메모: 프로토타입은 Swing Timer(약 60fps)로 그린다. 모니터 주사율에 정확히 맞추려면
- * Canvas + BufferStrategy 렌더 루프로 바꾼다.
+ * 구현 메모: ExamPanel 렌더 스레드가 모니터 주사율(보통 60Hz)로 그린다 (vsync는 보장하지 않음).
+ * 예전 Swing Timer는 실제로 약 33Hz였고, 그때의 흐르는 속도를 유지하려고 2프레임에 한 칸씩 움직인다.
  */
 public class MotionNoiseLayer extends SpotlightLayer {
     private static final int GRAIN = 2;          // 노이즈 알갱이 크기(px)
@@ -99,7 +99,8 @@ public class MotionNoiseLayer extends SpotlightLayer {
             return;
         }
         Rectangle r = area.intersection(new Rectangle(0, 0, width, height));
-        int offset = (int) ((ctx.getFrame() * SPEED) % gridH);
+        // 렌더가 실제 60Hz가 되면서(예전 Timer는 약 33Hz) 흐르는 속도가 두 배가 되지 않게 2프레임에 SPEED칸
+        int offset = (int) ((ctx.getFrame() / 2 * SPEED) % gridH);
         for (int y = r.y; y < r.y + r.height; y++) {
             int gy = y / GRAIN;
             int movingRow = ((gy - offset) % gridH + gridH) % gridH; // 글자 노이즈는 아래로 흐름

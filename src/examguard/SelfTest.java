@@ -7,8 +7,13 @@ import examguard.analysis.SuspicionScorer;
 import examguard.analysis.TrajectoryRecorder;
 import examguard.analysis.TrajectorySimulator;
 import examguard.display.ExamPanel;
+import examguard.display.Gamma;
 import examguard.display.AntiOcrWatermarkLayer;
 import examguard.display.CameraModel;
+import examguard.display.Cellophane;
+import examguard.display.ColorKeyLayer;
+import examguard.display.LineRulerLayer;
+import examguard.display.ZeroInfoSpotlightLayer;
 import examguard.display.MotionNoiseLayer;
 import examguard.display.TemporalMaskLayer;
 import examguard.display.PlainLayer;
@@ -105,6 +110,13 @@ public class SelfTest {
         System.out.printf("숫자 문항 3개를 옆 사람 것으로 베낌 → 지목: %d / 40%n", copyFlagged);
         System.out.printf("한 문항만 베낌 → 지목: %d / 40 (보고 안 하는 것이 정상)%n", oneCopyFlagged);
 
+        // 보정 도구: 시간이 모두 같으면 σ=0이라 기준 = 그 시간, 퍼질수록 기준이 내려가야 함
+        double same = examguard.analysis.TimeCalibration.threshold(new double[]{60, 60, 60});
+        double spread = examguard.analysis.TimeCalibration.threshold(new double[]{30, 60, 120});
+        if (Math.abs(same - 60) > 1e-9 || !(spread < 30)) {
+            throw new AssertionError("TimeCalibration 기준 계산 오류 (" + same + ", " + spread + ")");
+        }
+
         System.out.println("\n== 6. 개인화 난이도 조건 · 식별 코드 ==");
         int zeroRemainder = 0, oddDiscount = 0;
         for (ExamPaper p : papers) {
@@ -128,6 +140,12 @@ public class SelfTest {
         System.out.println("\n== 9. 시간차 마스킹 서브프레임 장수 (3·5장): 한 주기 평균 = 목표 밝기, 카메라 한 장 상관계수 ==");
         subframeCheck(gen.generate(roster.get(0)).getVariants().get(2));
 
+        System.out.println("\n== 10. 색 열쇠 고정 노이즈: 보호 없음 화면과의 상관 (1=그대로 읽힘, 0=정보 없음) ==");
+        colorKeyCheck(gen.generate(roster.get(0)).getVariants().get(2));
+
+        System.out.println("\n== 11. 부분 표시 비교: 원(줄) 밖에 남은 글자 세부 정보 (보호 없음 화면과의 고주파 상관, 0=정보 없음) ==");
+        outsideInfoCheck(gen.generate(roster.get(0)).getVariants().get(2));
+
         if (args.length >= 2 && args[0].equals("--screens")) {
             File dir = new File(args[1]);
             dir.mkdirs();
@@ -136,8 +154,8 @@ public class SelfTest {
             AntiOcrWatermarkLayer marked = new AntiOcrWatermarkLayer();
             marked.setWatermark("ID " + paper.getCodeString());
             ProtectionLayer[] layers = {new PlainLayer(), new SpotlightLayer(), new MotionNoiseLayer(),
-                    new TemporalMaskLayer(), marked};
-            String[] names = {"plain", "spotlight", "noise", "temporal", "watermark"};
+                    new TemporalMaskLayer(), marked, new ZeroInfoSpotlightLayer(), new LineRulerLayer()};
+            String[] names = {"plain", "spotlight", "noise", "temporal", "watermark", "zeroinfo", "linemode"};
             for (int i = 0; i < layers.length; i++) {
                 ExamPanel panel = new ExamPanel(new TrajectoryRecorder());
                 panel.setLayer(layers[i]);
@@ -177,7 +195,7 @@ public class SelfTest {
         });
         ref.showQuestion(v, 2);
         ExamPanel panel = new ExamPanel(new TrajectoryRecorder());
-        panel.setLayer(new TemporalMaskLayer());
+        panel.setLayer(temporalPhysics(2)); // N=2 쌍 상쇄의 물리량 검사 (기본값은 N=3)
         panel.showQuestion(v, 2);
         panel.setRadius(90);
         java.awt.image.BufferedImage plain = ref.snapshot(at, 0);
@@ -186,13 +204,15 @@ public class SelfTest {
 
         double[] one = new double[4], avg = new double[4]; // 글자합, 글자수, 배경합, 배경제곱합
         int bgCount = 0;
-        double maxErr = 0; // 픽셀마다 |두 장 평균 - 목표 밝기| (안티앨리어싱 회색 픽셀도 정확히 맞아야 함)
+        double maxErr = 0; // 픽셀마다 |사람 눈이 보는 두 장 평균 - 목표 밝기| (빛 기준 평균, 감마 2.2)
         for (int y = at.y - 60; y < at.y + 60; y++) {
             for (int x = at.x - 60; x < at.x + 60; x++) {
                 int p = plain.getRGB(x, y);
                 int lum = (((p >> 16) & 0xFF) * 3 + ((p >> 8) & 0xFF) * 6 + (p & 0xFF)) / 10;
                 boolean text = lum < 128;
-                double a = f0.getRGB(x, y) & 0xFF, m = (a + (f1.getRGB(x, y) & 0xFF)) / 2;
+                double a = f0.getRGB(x, y) & 0xFF;
+                // 사람 눈은 빛을 평균한다 (예전 검사는 픽셀 값을 평균해 사람 눈에 남는 노이즈를 놓쳤다)
+                double m = perceived((Gamma.toLinear((int) a) + Gamma.toLinear(f1.getRGB(x, y) & 0xFF)) / 2);
                 maxErr = Math.max(maxErr, Math.abs(m - Math.round(128 + (lum - 128) * 0.16)));
                 if (text) { one[0] += a; one[1]++; avg[0] += m; }
                 else { one[2] += a; one[3] += a * a; avg[2] += m; avg[3] += m * m; bgCount++; }
@@ -215,7 +235,7 @@ public class SelfTest {
      */
     static void cameraCheck(QuestionVariant v) {
         Point at = new Point(300, 120);
-        ProtectionLayer[] layers = {new SpotlightLayer(), new MotionNoiseLayer(), new TemporalMaskLayer(),
+        ProtectionLayer[] layers = {new SpotlightLayer(), new MotionNoiseLayer(), temporalPhysics(2),
                 new AntiOcrWatermarkLayer()};
         String[] names = {"스포트라이트", "움직임 노이즈", "시간차 마스킹", "셰이딩·워터마크"};
         ((AntiOcrWatermarkLayer) layers[3]).setWatermark("ID 010101110010101");
@@ -277,8 +297,7 @@ public class SelfTest {
         }, v);
         java.awt.image.BufferedImage plain = ref.snapshot(at, 0);
         for (int n : new int[]{3, 5}) {
-            TemporalMaskLayer layer = new TemporalMaskLayer();
-            layer.setSubframes(n);
+            TemporalMaskLayer layer = temporalPhysics(n);
             ExamPanel panel = panelFor(layer, v);
             java.awt.image.BufferedImage[] frames = new java.awt.image.BufferedImage[n];
             for (int f = 0; f < n; f++) frames[f] = panel.snapshot(at, f);
@@ -288,8 +307,8 @@ public class SelfTest {
                     int p = plain.getRGB(x, y);
                     int lum = (((p >> 16) & 0xFF) * 3 + ((p >> 8) & 0xFF) * 6 + (p & 0xFF)) / 10;
                     double sum = 0;
-                    for (java.awt.image.BufferedImage f : frames) sum += f.getRGB(x, y) & 0xFF;
-                    maxErr = Math.max(maxErr, Math.abs(sum / n - Math.round(128 + (lum - 128) * 0.16)));
+                    for (java.awt.image.BufferedImage f : frames) sum += Gamma.toLinear(f.getRGB(x, y) & 0xFF);
+                    maxErr = Math.max(maxErr, Math.abs(perceived(sum / n) - Math.round(128 + (lum - 128) * 0.16)));
                 }
             }
             StringBuilder row = new StringBuilder(String.format("%d장 (60Hz에서 %dHz) 평균 오차 최대 %.2f · 카메라 한 장(시작 0/1프레임):",
@@ -313,7 +332,192 @@ public class SelfTest {
             if (worstVideo > 0.6) throw new AssertionError(n + "장인데 30fps 한 장으로 읽힘 (" + worstVideo + ")");
         }
         ref.clear();
-        System.out.println("  (녹화 프레임 여러 장을 평균하면 3·5장도 복원됨: 5장 평균 약 0.87·0.95 — README 참고)");
+        System.out.println("  (녹화 프레임 여러 장을 평균하면 3·5장도 복원됨: 5장 평균 약 0.83·0.84 — README 참고)");
+    }
+
+    /**
+     * 색 열쇠: 열쇠 색마다 ① 맨눈(밝기) ② 맞는 셀로판 ③ 틀린 셀로판 ④ 흑백 카메라 ⑤ 컬러 카메라 + 열쇠 채널 분리(공격).
+     * 맨눈은 0에 가깝고 맞는 셀로판은 1에 가까워야 하며, ⑤가 높게 나오는 것이 이 방식의 한계다.
+     */
+    static void colorKeyCheck(QuestionVariant v) {
+        Point at = new Point(300, 120);
+        ExamPanel ref = panelFor(new PlainLayer() {
+            @Override public boolean prefersLargeText() { return true; }
+        }, v);
+        java.awt.image.BufferedImage plain = ref.snapshot(at, 0);
+        CameraModel video = CameraModel.PRESETS.get(1); // AI 안경 영상
+        java.awt.image.BufferedImage plainShot = video.capture(f -> plain, 0, new Random(1));
+        // 열쇠 색이 모두 나오도록 시드를 고른다 (시드 % 열쇠 수)
+        for (long seed = 0; seed < ColorKeyLayer.KEYS.length; seed++) {
+            ColorKeyLayer layer = new ColorKeyLayer(seed);
+            ExamPanel panel = panelFor(layer, v);
+            java.awt.image.BufferedImage img = panel.snapshot(at, 0);
+            Cellophane key = layer.getKey();
+            // 맨눈: 밝기만 보면 0이 나와도 색조 차이로 읽힐 수 있다 → 밝기·빨강-초록·파랑-노랑 중 가장 큰 상관
+            double nakedLum = pixelCorr(plain, img, at, p -> (((p >> 16) & 0xFF) * 3 + ((p >> 8) & 0xFF) * 6 + (p & 0xFF)) / 10.0);
+            double nakedRG = pixelCorr(plain, img, at, p -> ((p >> 16) & 0xFF) - ((p >> 8) & 0xFF));
+            double nakedBY = pixelCorr(plain, img, at, p -> (p & 0xFF) - (((p >> 16) & 0xFF) + ((p >> 8) & 0xFF)) / 2.0);
+            double naked = Math.max(Math.abs(nakedLum), Math.max(Math.abs(nakedRG), Math.abs(nakedBY)));
+            double right = pixelCorr(plain, img, at, p -> key.channel(p));
+            StringBuilder wrong = new StringBuilder();
+            for (Cellophane c : Cellophane.values()) {
+                if (c != key) wrong.append(String.format(" %s %.2f", c.getLabel(), pixelCorr(plain, img, at, p -> c.channel(p))));
+            }
+            double gray = correlation(plainShot, video.capture(f -> img, 0, new Random(1)), at, 60, video.scale());
+            java.awt.image.BufferedImage keyOnly = channelImage(img, key); // 컬러 카메라로 찍고 열쇠 채널만 꺼낸 것
+            double split = correlation(plainShot, video.capture(f -> keyOnly, 0, new Random(1)), at, 60, video.scale());
+            System.out.printf("열쇠 %s: 맨눈(밝기 %.2f, 색 %.2f/%.2f) | 맞는 셀로판 %.2f | 틀린 셀로판%s | 흑백 카메라 %.2f | 컬러 카메라+채널 분리 %.2f%n",
+                    key.getLabel(), nakedLum, nakedRG, nakedBY, right, wrong, gray, split);
+            panel.clear();
+            if (naked > 0.35) throw new AssertionError(key + " 맨눈에 글자가 비침 (" + naked + ")");
+            if (right < 0.95) throw new AssertionError(key + " 셀로판으로 봐도 글자가 깨끗하지 않음 (" + right + ")");
+            for (Cellophane c : Cellophane.values()) {
+                double leak = pixelCorr(plain, img, at, p -> c.channel(p));
+                if (c != key && Math.abs(leak) > 0.5) throw new AssertionError(c + "(틀린 색)으로도 글자가 보임 (" + leak + ")");
+            }
+        }
+        ref.clear();
+        System.out.println("  (컬러 카메라 + 채널 분리가 높게 나오는 것이 이 방식의 한계: 열쇠 색이 2가지뿐이라 다 시도하면 됨)");
+    }
+
+    /**
+     * 원(줄)을 맨 아래에 두고, 위쪽 글줄들(원 밖)에 글자 정보가 얼마나 남는지 잰다.
+     * 측정 영역 = 각 글줄의 안쪽(가장자리에서 4px 이상 떨어진 곳). 가장자리를 빼야 "줄 위치(막대 테두리)"가 아니라
+     * 글자 모양 정보만 본다. 밝기 그대로의 상관과 세부(픽셀 - 7×7 평균) 상관을 함께 본다.
+     * 흐린 원은 흐림 커널을 알고 있으므로(상자 흐림 2회) Richardson-Lucy 디블러로 되돌려 본다 (공격자 시나리오).
+     */
+    static void outsideInfoCheck(QuestionVariant v) {
+        ExamPanel ref = panelFor(new PlainLayer(), v);
+        java.awt.image.BufferedImage plain = ref.snapshot(null, 0);
+        int w = plain.getWidth(), h = plain.getHeight();
+        Point at = new Point(w / 2, h - 20); // 원·줄을 맨 아래에 두어 위쪽 글줄이 모두 원 밖
+        boolean[] mask = new boolean[w * h];
+        for (int[] l : ZeroInfoSpotlightLayer.detectLines(plain)) {
+            if (l[1] > h - 60) continue; // 원(줄)이 걸리는 아래쪽 줄은 제외
+            for (int y = l[0] + 4; y <= l[1] - 4; y++) for (int x = l[2] + 4; x <= l[3] - 4; x++) mask[y * w + x] = true;
+        }
+        double[] p0 = gray(plain), d0 = detail(p0, w, h);
+
+        ProtectionLayer[] layers = {new SpotlightLayer(), new ZeroInfoSpotlightLayer(), new LineRulerLayer()};
+        String[] names = {"흐린 원", "정보 없는 원", "줄 단위"};
+        for (int i = 0; i < layers.length; i++) {
+            ExamPanel p = panelFor(layers[i], v);
+            double[] g = gray(p.snapshot(at, 0));
+            double raw = corr(g, p0, mask), det = corr(detail(g, w, h), d0, mask);
+            System.out.printf("%-8s 원 밖 글자 정보: 밝기 %.2f · 세부 %.2f%n", names[i], raw, det);
+            if (i == 0) {
+                int r = Math.max(8, 20 / 2); // ExamPanel 기본: 글자 크기 20 → 흐림 반경 10
+                double[] restored = richardsonLucy(g, w, h, r, 10);
+                System.out.printf("%-8s 원 밖 글자 정보: 밝기 %.2f · 세부 %.2f  ← 흐림 커널을 알고 디블러(10회)로 되돌린 공격%n",
+                        "  └ 디블러", corr(restored, p0, mask), corr(detail(restored, w, h), d0, mask));
+            } else if (Math.abs(raw) > 0.05 || Math.abs(det) > 0.05) {
+                throw new AssertionError(names[i] + "인데 원 밖에 글자 정보가 남음 (" + raw + ", " + det + ")");
+            }
+            p.clear();
+        }
+        ref.clear();
+        System.out.println("  (흐린 원: 눈으로는 못 읽고 단순 디블러로도 복원 안 되지만 통계적으로 정보가 남음 → '완벽'은 증명 불가."
+                + " 정보 없는 원·줄 단위: 원 밖 정보 0 → 사진 한 장엔 원(줄) 안만 담김을 증명 가능)");
+    }
+
+    private static double[] gray(java.awt.image.BufferedImage img) {
+        int w = img.getWidth(), h = img.getHeight();
+        int[] rgb = img.getRGB(0, 0, w, h, null, 0, w);
+        double[] g = new double[rgb.length];
+        for (int i = 0; i < rgb.length; i++) {
+            int p = rgb[i];
+            g[i] = (((p >> 16) & 0xFF) * 3 + ((p >> 8) & 0xFF) * 6 + (p & 0xFF)) / 10.0;
+        }
+        return g;
+    }
+
+    /** 고주파 성분 (픽셀 - 7×7 평균). 가장자리 3px는 0 */
+    private static double[] detail(double[] g, int w, int h) {
+        double[] out = new double[g.length];
+        for (int y = 3; y < h - 3; y++) {
+            for (int x = 3; x < w - 3; x++) {
+                double s = 0;
+                for (int dy = -3; dy <= 3; dy++) for (int dx = -3; dx <= 3; dx++) s += g[(y + dy) * w + x + dx];
+                out[y * w + x] = g[y * w + x] - s / 49;
+            }
+        }
+        return out;
+    }
+
+    /** mask가 true인 픽셀만으로 피어슨 상관 (한쪽이 균일하면 0) */
+    private static double corr(double[] a, double[] b, boolean[] mask) {
+        double sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
+        int n = 0;
+        for (int i = 0; i < a.length; i++) {
+            if (!mask[i]) continue;
+            sa += a[i]; sb += b[i]; saa += a[i] * a[i]; sbb += b[i] * b[i]; sab += a[i] * b[i];
+            n++;
+        }
+        double va = saa / n - Math.pow(sa / n, 2), vb = sbb / n - Math.pow(sb / n, 2);
+        return va < 1e-9 || vb < 1e-9 ? 0 : (sab / n - (sa / n) * (sb / n)) / Math.sqrt(va * vb);
+    }
+
+    /** QuestionRenderer.blur와 같은 흐림 (상자 흐림을 가로·세로 2회). 가장자리는 흰색(255)으로 채움 */
+    private static double[] boxBlurTwice(double[] src, int w, int h, int r) {
+        double[] a = src;
+        for (int pass = 0; pass < 2; pass++) a = boxBlur(boxBlur(a, w, h, r, true), w, h, r, false);
+        return a;
+    }
+
+    private static double[] boxBlur(double[] src, int w, int h, int r, boolean horizontal) {
+        double[] out = new double[src.length];
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                double s = 0;
+                for (int k = -r; k <= r; k++) {
+                    int xx = horizontal ? x + k : x, yy = horizontal ? y : y + k;
+                    s += (xx < 0 || yy < 0 || xx >= w || yy >= h) ? 255 : src[yy * w + xx];
+                }
+                out[y * w + x] = s / (2 * r + 1);
+            }
+        }
+        return out;
+    }
+
+    /** Richardson-Lucy 디콘볼루션: 흐림 커널(대칭)을 알 때 흐림을 되돌리는 표준 방법 */
+    private static double[] richardsonLucy(double[] observed, int w, int h, int r, int iterations) {
+        double[] est = observed.clone();
+        for (int it = 0; it < iterations; it++) {
+            double[] blurred = boxBlurTwice(est, w, h, r);
+            double[] ratio = new double[est.length];
+            for (int i = 0; i < ratio.length; i++) ratio[i] = observed[i] / Math.max(1e-3, blurred[i]);
+            double[] corr = boxBlurTwice(ratio, w, h, r);
+            for (int i = 0; i < est.length; i++) est[i] *= corr[i];
+        }
+        return est;
+    }
+
+    private static double pixelCorr(java.awt.image.BufferedImage plain, java.awt.image.BufferedImage img, Point at,
+                                    java.util.function.IntToDoubleFunction f) {
+        double sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
+        int n = 0;
+        for (int y = at.y - 60; y < at.y + 60; y++) {
+            for (int x = at.x - 60; x < at.x + 60; x++) {
+                int p = plain.getRGB(x, y);
+                double a = (((p >> 16) & 0xFF) * 3 + ((p >> 8) & 0xFF) * 6 + (p & 0xFF)) / 10.0, b = f.applyAsDouble(img.getRGB(x, y));
+                sa += a; sb += b; saa += a * a; sbb += b * b; sab += a * b;
+                n++;
+            }
+        }
+        double cov = sab / n - (sa / n) * (sb / n);
+        return cov / Math.sqrt((saa / n - Math.pow(sa / n, 2)) * (sbb / n - Math.pow(sb / n, 2)));
+    }
+
+    private static java.awt.image.BufferedImage channelImage(java.awt.image.BufferedImage img, Cellophane c) {
+        java.awt.image.BufferedImage out = new java.awt.image.BufferedImage(img.getWidth(), img.getHeight(),
+                java.awt.image.BufferedImage.TYPE_INT_RGB);
+        for (int y = 0; y < img.getHeight(); y++) {
+            for (int x = 0; x < img.getWidth(); x++) {
+                int v = c.channel(img.getRGB(x, y));
+                out.setRGB(x, y, (v << 16) | (v << 8) | v);
+            }
+        }
+        return out;
     }
 
     private static ExamPanel panelFor(ProtectionLayer layer, QuestionVariant v) {
@@ -322,6 +526,18 @@ public class SelfTest {
         p.setRadius(90);
         p.showQuestion(v, 2);
         return p;
+    }
+
+    /** 노이즈 물리량 검사용 시간차 마스킹 (장수 지정. 기본값은 N=3) */
+    static TemporalMaskLayer temporalPhysics(int n) {
+        TemporalMaskLayer layer = new TemporalMaskLayer();
+        layer.setSubframes(n);
+        return layer;
+    }
+
+    /** 빛의 세기 평균 → 사람 눈이 보는 밝기 (픽셀 값 단위, 반올림 없이) */
+    static double perceived(double meanLinear) {
+        return 255 * Math.pow(meanLinear, 1 / Gamma.GAMMA);
     }
 
     /** 화면 좌표 at 주변 ±half px 영역(센서 좌표로 환산)의 피어슨 상관계수 */

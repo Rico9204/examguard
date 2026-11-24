@@ -13,7 +13,11 @@ import java.util.Map;
  * 최종 판단과 불이익 처분은 반드시 사람이 확인한 뒤에 한다.
  */
 public final class ReviewAdvisor {
-    /** 예상 풀이 시간의 이 비율보다 빨리 맞히면 "너무 빠른 정답"으로 본다 */
+    /**
+     * 예상 풀이 시간의 이 비율보다 빨리 맞히면 "너무 빠른 정답"으로 본다.
+     * 미보정 값: 성실 응시자 시간 퍼짐(σ)에 따라 오탐률이 0~23%로 바뀐다 (docs/research 3.2).
+     * 실측 데이터가 모이면 TimeCalibration이 출력한 문항별 기준으로 바꾼다.
+     */
     private static final double TOO_FAST_RATIO = 0.25;
 
     private ReviewAdvisor() {}
@@ -35,7 +39,8 @@ public final class ReviewAdvisor {
             double seconds = timeSpentMs[i] / 1000.0;
             int expected = v.getSource().getExpectedSeconds();
             if (seconds < expected * TOO_FAST_RATIO) {
-                flags.add(String.format("문제 %d: 보통 %d초 걸리는 계산 문제를 %.0f초 만에 정답 — 풀이 과정 확인",
+                flags.add(String.format("문제 %d: 보통 %d초 걸리는 계산 문제를 %.0f초 만에 정답 — 풀이 과정 확인"
+                                + " (기준값 미보정: 실력 있는 수험자도 걸릴 수 있음)",
                         i + 1, expected, seconds));
             }
         }

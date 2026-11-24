@@ -25,7 +25,8 @@ import java.util.function.LongFunction;
  * 시험 화면이 초소형 카메라·AI 안경에 "어떻게 찍히는지" 근사한다.
  *
  * 처리 순서:
- *  1) 노출: 노출 시간 동안 화면에 나온 프레임들을 평균 (시간차 마스킹의 성패가 여기서 갈린다)
+ *  1) 노출: 노출 시간 동안 화면에 나온 프레임들의 빛을 평균 (선형, 감마 2.2 가정) 후 감마 적용해 저장
+ *     (시간차 마스킹의 성패가 여기서 갈린다)
  *  2) 해상도: 촬영 거리·화각·센서 화소로 "화면 1px이 센서 몇 px에 맺히는지" 계산해 축소
  *  3) 렌즈 흐림: 가우시안
  *  4) 센서 노이즈: 가우시안
@@ -123,12 +124,14 @@ public final class CameraModel {
             int[] rgb = f.getRGB(0, 0, w, h, null, 0, w);
             for (int i = 0; i < rgb.length; i++) {
                 int p = rgb[i];
-                acc[i] += (((p >> 16) & 0xFF) * 3 + ((p >> 8) & 0xFF) * 6 + (p & 0xFF)) / 10.0;
+                // 센서는 빛을 모은다: 화면 픽셀 값을 빛의 세기로 바꿔 더한다 (예전엔 픽셀 값을 그대로 평균했음)
+                acc[i] += Gamma.toLinear((((p >> 16) & 0xFF) * 3 + ((p >> 8) & 0xFF) * 6 + (p & 0xFF)) / 10);
             }
         }
         BufferedImage gray = new BufferedImage(w, h, BufferedImage.TYPE_BYTE_GRAY);
         WritableRaster gr = gray.getRaster();
-        for (int i = 0; i < acc.length; i++) gr.setSample(i % w, i / w, 0, (int) Math.round(acc[i] / n));
+        // 저장은 다시 감마 적용 값으로 (카메라도 사진을 감마 적용해 저장한다. ponytail: 카메라 톤 곡선을 감마 2.2로 가정)
+        for (int i = 0; i < acc.length; i++) gr.setSample(i % w, i / w, 0, Gamma.toValue(acc[i] / n));
 
         // 2) 해상도
         int tw = Math.max(1, (int) Math.round(w * scale())), th = Math.max(1, (int) Math.round(h * scale()));

@@ -43,6 +43,22 @@ public class ExamSession {
         startedAt = System.currentTimeMillis() - resumedElapsedSeconds * 1000L;
     }
 
+    /** 눈 휴식처럼 문제를 볼 수 없던 시간만큼 남은 시간을 늘린다 */
+    public void extend(int seconds) {
+        if (isStarted()) startedAt += seconds * 1000L;
+    }
+
+    private final List<String> supervisorNotes = new ArrayList<>();
+
+    /** 감독관 확인 권장 목록에 남길 응시 중 사건 (예: 깜빡임 끄기 사용 시각) */
+    public void addSupervisorNote(String note) {
+        supervisorNotes.add(note);
+    }
+
+    public List<String> getSupervisorNotes() {
+        return new ArrayList<>(supervisorNotes);
+    }
+
     public boolean isStarted() {
         return startedAt > 0;
     }

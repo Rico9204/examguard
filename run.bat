@@ -15,7 +15,7 @@ echo Using JDK in: %JDKBIN%
 
 if exist out rmdir /s /q out
 mkdir out
-"%JDKBIN%javac" -encoding UTF-8 -d out src\examguard\*.java src\examguard\model\*.java src\examguard\fingerprint\*.java src\examguard\display\*.java src\examguard\analysis\*.java src\examguard\data\*.java src\examguard\exam\*.java src\examguard\ui\*.java src\examguard\ui\cbt\*.java
+"%JDKBIN%javac" -encoding UTF-8 -d out src\examguard\*.java src\examguard\ai\*.java src\examguard\model\*.java src\examguard\fingerprint\*.java src\examguard\display\*.java src\examguard\analysis\*.java src\examguard\data\*.java src\examguard\exam\*.java src\examguard\ui\*.java src\examguard\ui\cbt\*.java
 if errorlevel 1 (
   echo [ERROR] Compile failed. See messages above.
   pause

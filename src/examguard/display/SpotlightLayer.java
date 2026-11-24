@@ -20,22 +20,37 @@ public class SpotlightLayer implements ProtectionLayer {
         return "부분 표시 (스포트라이트)";
     }
 
+    /**
+     * 템플릿 메서드: ① 배경(드러나지 않은 부분) → ② 드러낼 모양 → ③ 그 안을 그림 → ④ 테두리.
+     * 하위 클래스는 필요한 단계만 바꾼다 (배경: ZeroInfoSpotlightLayer, 모양: LineRulerLayer, 안쪽: MotionNoiseLayer 등).
+     */
     @Override
     public void paint(Graphics2D g, RenderContext ctx) {
-        g.drawImage(ctx.getBlurred(), 0, 0, null);
-        Point f = ctx.getFocus();
-        if (f == null) return;
+        drawBackground(g, ctx);
+        if (ctx.getFocus() == null) return;
+        Shape shape = revealShape(ctx);
+        if (shape == null) return;
 
-        int r = ctx.getRadius();
-        Ellipse2D circle = new Ellipse2D.Double(f.x - r, f.y - r, 2.0 * r, 2.0 * r);
         Shape oldClip = g.getClip();
-        g.clip(circle);
-        drawRevealed(g, ctx, circle.getBounds());
+        g.clip(shape);
+        drawRevealed(g, ctx, shape.getBounds());
         g.setClip(oldClip);
 
         g.setColor(RING);
         g.setStroke(new BasicStroke(2f));
-        g.draw(circle);
+        g.draw(shape);
+    }
+
+    /** 드러나지 않은 부분을 어떻게 보여줄지. 기본은 흐린 문제 */
+    protected void drawBackground(Graphics2D g, RenderContext ctx) {
+        g.drawImage(ctx.getBlurred(), 0, 0, null);
+    }
+
+    /** 드러낼 영역의 모양. 기본은 마우스 주변 원 */
+    protected Shape revealShape(RenderContext ctx) {
+        Point f = ctx.getFocus();
+        int r = ctx.getRadius();
+        return new Ellipse2D.Double(f.x - r, f.y - r, 2.0 * r, 2.0 * r);
     }
 
     /** 원 안을 어떻게 보여줄지. 하위 클래스가 바꿀 수 있다 (MotionNoiseLayer). */

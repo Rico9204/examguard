@@ -9,6 +9,9 @@ import examguard.data.AutoSaveStore;
 import examguard.data.Repository;
 import examguard.data.SessionResult;
 import examguard.display.AntiOcrWatermarkLayer;
+import examguard.display.ColorKeyLayer;
+import examguard.display.LineRulerLayer;
+import examguard.display.ZeroInfoSpotlightLayer;
 import examguard.display.MotionNoiseLayer;
 import examguard.display.TemporalMaskLayer;
 import examguard.display.PlainLayer;
@@ -82,8 +85,10 @@ public class ExamTab extends JPanel {
         setBorder(new EmptyBorder(10, 10, 10, 10));
 
         studentBox = new JComboBox<>(roster.toArray(new Student[0]));
-        layerBox = new JComboBox<>(new ProtectionLayer[]{new SpotlightLayer(), new MotionNoiseLayer(),
-                new TemporalMaskLayer(), new AntiOcrWatermarkLayer(), new PlainLayer()});
+        layerBox = new JComboBox<>(new ProtectionLayer[]{new SpotlightLayer(), new ZeroInfoSpotlightLayer(),
+                new LineRulerLayer(), new MotionNoiseLayer(),
+                new TemporalMaskLayer(), new AntiOcrWatermarkLayer(),
+                new ColorKeyLayer(generator.examSeed("color-key")), new PlainLayer()});
         layerBox.setRenderer(new DefaultListCellRenderer() {
             @Override
             public Component getListCellRendererComponent(JList<?> list, Object value, int index,
@@ -141,8 +146,10 @@ public class ExamTab extends JPanel {
         if (chosen.isAnimated()) { // 움직임 노이즈·시간차 마스킹 모두 화면이 계속 바뀐다
             int ok = JOptionPane.showConfirmDialog(this,
                     "이 모드는 문제 일부를 계속 움직이거나 깜빡이는 점(노이즈)으로 표시합니다.\n"
+                    + "시간차 마스킹(기본 3장)은 약 20Hz로 깜빡여 광과민성 민감 대역(약 15~25Hz) 안입니다.\n"
                     + "빛 자극에 민감한 분(광과민성 발작 위험)은 사용하지 마세요.\n"
-                    + "어지러우면 바로 다른 보호 방식으로 바꾸세요.\n\n계속할까요?",
+                    + "시험 중 [깜빡임 끄기] 또는 F2로 언제든 정지 화면으로 바꿀 수 있고(감독관 기록에 남음),\n"
+                    + "깜빡이는 화면은 10분마다 25초 눈 휴식이 있습니다(그만큼 시험 시간 연장).\n\n계속할까요?",
                     "주의: 움직이는 화면", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
             if (ok != JOptionPane.YES_OPTION) {
                 layerBox.setSelectedItem(lastLayer);
@@ -191,8 +198,9 @@ public class ExamTab extends JPanel {
         int score = paper.grade(session.getAnswers());
         List<String> foreign = AnswerCheck.findForeignAnswers(paper, session.getAnswers(), tracer.getPapers());
         long[] times = session.getTimeSpentMs();
-        List<String> flags = ReviewAdvisor.advise(paper, session.getAnswers(), times, report, foreign,
-                session.isKeyboardMode());
+        List<String> flags = new java.util.ArrayList<>(ReviewAdvisor.advise(paper, session.getAnswers(), times, report,
+                foreign, session.isKeyboardMode()));
+        flags.addAll(session.getSupervisorNotes()); // 깜빡임 끄기 사용 시각 등
         SessionResult result = new SessionResult(paper, session.getAnswers(), score, samples, report, foreign,
                 flags, times, session.isKeyboardMode(), session.getStartedAt(), System.currentTimeMillis());
         autoSave.delete(paper.getStudent().getStudentNo());
